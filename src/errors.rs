@@ -10,4 +10,6 @@ pub enum WPILogParseError {
     TooShort,
     #[error("Unsupported version '{0:?}', expected '{SUPPORTED_VERSION:?}'")]
     UnsupportedVersion([u8; 2]),
+    #[error("Fuck")]
+    Uhhh,
 }

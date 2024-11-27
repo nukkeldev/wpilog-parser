@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 use crate::extract_from_slice;
 
 pub(crate) fn from_utf8_release_unchecked<'a>(data: &'a [u8]) -> &'a str {

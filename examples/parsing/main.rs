@@ -4,7 +4,7 @@ use memmap2::Mmap;
 use wpilog_parser::read_only;
 
 fn main() {
-    let file = File::open("Log_24-04-06_13-28-45_e5.wpilog").unwrap();
+    let file = File::open("examples/parsing/Log_24-04-06_13-28-45_e5.wpilog").unwrap();
     let map = unsafe { Mmap::map(&file).unwrap() };
 
     let start = Instant::now();
