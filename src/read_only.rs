@@ -1,23 +1,38 @@
-use std::collections::HashMap;
+use std::{
+    collections::{hash_map::Keys, HashMap},
+    ops::Index,
+};
 
 use crate::{
+    debug, error,
     errors::WPILogParseError,
     parsing::{
         u32, u32_len_prefix_utf8_string_unchecked, variable_length_u32, variable_length_u64,
     },
-    MINIMUM_WPILOG_SIZE, SUPPORTED_VERSION, WPILOG_MAGIC,
+    trace, tracing, warn, MINIMUM_WPILOG_SIZE, SUPPORTED_VERSION, WPILOG_MAGIC,
 };
 
-#[derive(Debug, Clone)]
+// TYPES
+
+pub type Timestamp = u64;
+
+// WPILOG
+
+#[derive(Clone)]
 pub struct WPILog<'a> {
-    metadata: &'a str, // Arbitrary metadata
-                       // entries: HashMap<&'a str, Entry<'a>>, // Name correlated entries
+    /// File header metadata
+    pub(crate) metadata: &'a str,
+    /// Name correlated entries
+    pub(crate) entries: HashMap<&'a str, Entry>,
 }
 
 impl<'a> WPILog<'a> {
+    // Parsing
+
     /// Verifies the header of the .wpilog, checking the magic and version.
-    /// Returns the unread data and the "extra header string" if verified.
-    fn verify_header(data: &'a [u8]) -> Result<(&'a [u8], &'a str), WPILogParseError> {
+    /// Increments the `bytes_read` by the parsed bytes.
+    /// Returns the "extra header string" if verified.
+    fn verify_header(data: &'a [u8], bytes_read: &mut usize) -> Result<&'a str, WPILogParseError> {
         debug_assert!(
             data.len() >= MINIMUM_WPILOG_SIZE,
             "{}",
@@ -28,122 +43,165 @@ impl<'a> WPILog<'a> {
             if &data[0..6] != WPILOG_MAGIC {
                 return Err(WPILogParseError::InvalidMagic);
             }
+            *bytes_read += 6;
 
             let version = [data[7], data[6]]; // LE swap
             if version != SUPPORTED_VERSION {
                 return Err(WPILogParseError::UnsupportedVersion(version));
             }
+            *bytes_read += 2;
         }
 
-        let (data, metadata) = u32_len_prefix_utf8_string_unchecked(&data[8..]);
+        let metadata = u32_len_prefix_utf8_string_unchecked(&data[*bytes_read..], bytes_read);
 
-        Ok((data, metadata))
+        Ok(metadata)
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(data_len = data.len())))]
     pub fn parse(data: &'a [u8]) -> Result<Self, WPILogParseError> {
         let len = data.len();
+        let mut bytes_read = 0;
 
-        let (mut data, metadata) = Self::verify_header(data)?;
+        let metadata = Self::verify_header(data, &mut bytes_read)?;
 
-        let mut entries: HashMap<&'a str, Vec<(u64, &'a [u8])>> = HashMap::new();
-        let mut id_entries: HashMap<u32, Vec<(u64, &'a [u8])>> = HashMap::new();
-        let mut correlation_table: HashMap<u32, EntryIdNameBinding<'a>> = HashMap::new();
+        debug!("Verified header: {metadata:?}");
 
-        // First-Pass
-        while !data.is_empty() {
-            let entry_id;
-            let payload_size;
-            let timestamp;
+        let mut id_name: HashMap<u32, &str> = HashMap::new();
+        let mut entries: HashMap<&str, Entry> = HashMap::new();
 
-            let entry_id_length = data[0] & 0b11;
-            let payload_size_length = (data[0] & 0b11 << 2) >> 2;
-            let timestamp_length = (data[0] & 0b111 << 4) >> 4;
-            data = &data[1..];
+        tracing! {
+            let mut now = std::time::Instant::now();
+            let mut record_count = 0;
+            let mut entry_count = 0;
+        }
 
-            (data, entry_id) = variable_length_u32(data, entry_id_length as usize + 1);
-            (data, payload_size) = variable_length_u32(data, payload_size_length as usize + 1);
-            (data, timestamp) = variable_length_u64(data, timestamp_length as usize + 1);
+        while bytes_read < len {
+            tracing! {
+                let span = tracing::span!(
+                    tracing::Level::INFO,
+                    "record",
+                    idx = record_count,
+                    offset = bytes_read
+                );
+                let _guard = span.enter();
+            }
 
-            let payload = &data[..payload_size as usize];
-            data = &data[payload_size as usize..];
+            let entry_id_length = (data[bytes_read] & 0b11) as usize + 1;
+            let payload_size_length = ((data[bytes_read] & 0b11 << 2) >> 2) as usize + 1;
+            let timestamp_length = ((data[bytes_read] & 0b111 << 4) >> 4) as usize + 1;
+            bytes_read += 1;
+
+            trace!(entry_id_length, payload_size_length, timestamp_length);
+
+            let entry_id = variable_length_u32(&data[bytes_read..], entry_id_length);
+            bytes_read += entry_id_length;
+            let payload_size =
+                variable_length_u32(&data[bytes_read..], payload_size_length) as usize;
+            bytes_read += payload_size_length;
+            let timestamp = variable_length_u64(&data[bytes_read..], timestamp_length);
+            bytes_read += timestamp_length;
+
+            trace!(entry_id, payload_size, timestamp);
+
+            tracing! {
+                record_count += 1;
+            }
 
             if entry_id != 0 {
-                id_entries
-                    .entry(entry_id)
-                    .or_default()
-                    .push((timestamp, payload));
+                entries
+                    .get_mut(&id_name[&entry_id])
+                    .unwrap()
+                    .add_value(timestamp, bytes_read);
+                bytes_read += payload_size;
 
                 continue;
             }
 
-            let control_record_type = payload[0];
-            let (_, target_entry_id) = u32(&payload[1..5]);
+            tracing! {
+                entry_count += 1;
+            }
+
+            let control_record_type = data[bytes_read];
+            bytes_read += 1;
+
+            let target_entry_id = u32(&data[bytes_read..bytes_read + 4]);
+            bytes_read += 4;
 
             if control_record_type == 0 {
-                let (_, entry_name) = u32_len_prefix_utf8_string_unchecked(&payload[5..]);
-                correlation_table
-                    .entry(target_entry_id)
-                    .and_modify(|b| b.add_binding(timestamp, entry_name))
-                    .or_insert(EntryIdNameBinding::new(timestamp, entry_name));
-            }
-        }
-
-        for (id, e) in id_entries {
-            for entry in e {
-                let entry_name = correlation_table.get_mut(&id).unwrap().get_binding(entry.0);
-                if let Some(name) = entry_name {
-                    entries.entry(name).or_default().push(entry);
-                } else {
-                    println!("{id} {:x}", len - data.len());
+                if id_name.contains_key(&target_entry_id) {
+                    unimplemented!("This parser does not support entry_id rebindings.");
                 }
+
+                let name = u32_len_prefix_utf8_string_unchecked(&data[bytes_read..], &mut 0);
+                id_name.insert(target_entry_id, name);
+                entries.insert(name, Entry::new(bytes_read));
             }
+
+            bytes_read += payload_size - 5;
         }
 
-        Ok(Self { metadata })
+        tracing! {
+            let elapsed = now.elapsed();
+
+            debug!(
+                ?elapsed,
+                entry_count,
+                record_count,
+                time_per_record = ?elapsed.div_f32(record_count as f32),
+                throughput = (record_count as f32) / elapsed.as_secs_f32()
+            );
+
+            now = std::time::Instant::now();
+        }
+
+        // Rarely will records be dirastically out of order, so sorting should be fairly cheap.
+        entries.values_mut().for_each(|v| v.sort_by_timestamp());
+
+        debug!(second_pass = ?now.elapsed());
+
+        let log = Self { metadata, entries };
+
+        trace!(entry_names = ?log.get_entry_names());
+
+        Ok(log)
+    }
+
+    // Getters
+
+    pub fn get_entry_names(&self) -> Keys<'_, &str, Entry> {
+        self.entries.keys()
     }
 }
+
+impl<'a> Index<&str> for WPILog<'a> {
+    type Output = Entry;
+
+    fn index(&self, index: &str) -> &Self::Output {
+        &self.entries[index]
+    }
+}
+
+// ENTRY
 
 #[derive(Debug, Clone)]
-struct EntryIdNameBinding<'a> {
-    last_idx: usize,
-    bindings: Vec<(u64, &'a str)>,
+pub struct Entry {
+    decl_offset: usize,
+    values: Vec<(Timestamp, usize)>, // TODO: All data types should be parseable without the payload_size iirc
 }
 
-impl<'a> EntryIdNameBinding<'a> {
-    pub fn new(timestamp: u64, name: &'a str) -> Self {
+impl Entry {
+    fn new(decl_offset: usize) -> Self {
         Self {
-            last_idx: 0,
-            bindings: vec![(timestamp, name)],
+            decl_offset,
+            values: vec![],
         }
     }
 
-    pub fn add_binding(&mut self, timestamp: u64, name: &'a str) {
-        if self.bindings[0].0 > timestamp {
-            self.bindings.insert(0, (timestamp, name));
-        }
-
-        for i in 1..self.bindings.len() - 1 {
-            if timestamp > self.bindings[i].0 {
-                self.bindings.insert(i + 1, (timestamp, name));
-                return;
-            }
-        }
-        self.bindings.push((timestamp, name));
+    fn add_value(&mut self, timestamp: Timestamp, value_offset: usize) {
+        self.values.push((timestamp, value_offset));
     }
 
-    pub fn get_binding(&mut self, timestamp: u64) -> Option<&'a str> {
-        if timestamp < self.bindings[0].0 {
-            println!("{self:?} {timestamp}");
-            return None;
-        }
-
-        for i in 0..self.bindings.len() {
-            if timestamp >= self.bindings[(i + self.last_idx) % self.bindings.len()].0 {
-                self.last_idx = (i + self.last_idx) % self.bindings.len();
-                return Some(self.bindings[0].1);
-            }
-        }
-
-        unreachable!("wut")
+    fn sort_by_timestamp(&mut self) {
+        self.values.sort_by_key(|(t, _)| *t);
     }
 }

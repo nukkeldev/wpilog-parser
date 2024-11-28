@@ -29,3 +29,55 @@ macro_rules! err_if_safe {
         }
     };
 }
+
+pub(crate) mod tracing {
+    #[macro_export]
+    macro_rules! trace {
+        ($($t:tt)*) => {
+            #[cfg(feature = "tracing")]
+            tracing::trace!($($t)*);
+        };
+    }
+
+    #[macro_export]
+    macro_rules! debug {
+        ($($t:tt)*) => {
+            #[cfg(feature = "tracing")]
+            tracing::debug!($($t)*);
+        };
+    }
+
+    #[macro_export]
+    macro_rules! info {
+        ($($t:tt)*) => {
+            #[cfg(feature = "tracing")]
+            tracing::info!($($t)*);
+        };
+    }
+
+    #[macro_export]
+    macro_rules! warn {
+        ($($t:tt)*) => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!($($t)*);
+        };
+    }
+
+    #[macro_export]
+    macro_rules! error {
+        ($($t:tt)*) => {
+            #[cfg(feature = "tracing")]
+            tracing::error!($($t)*);
+        };
+    }
+
+    #[macro_export]
+    macro_rules! tracing {
+        ($($t:stmt;)*) => {
+            $(
+                #[cfg(feature = "tracing")]
+                $t;
+            )*
+        };
+    }
+}

@@ -20,6 +20,8 @@
 
 - No duplicate entry names.
   - NT entries are identified by name, so it makes no sense to have them conflict. The only scenario where this would make (technical) sense would be to change the type of a pre-existing entry, but even then, you're doing something wrong.
+- No entry id rebinding.
+  - The runtime cost for this is exponentially higher, it will be an option though.
 
 ## Non-requirements
 

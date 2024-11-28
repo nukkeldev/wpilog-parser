@@ -5,13 +5,17 @@ edition = "2021"
 
 [dependencies]
 memmap2 = "0.9.5"
-log = "0.4.22"
-pretty_env_logger = "0.5.0"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 thiserror = "2.0.3"
+tracing = { version = "0.1.41", optional = true }
+tracing-subscriber = { version = "0.3.18", features = [
+    "env-filter",
+], optional = true }
 
 [features]
-safe = [] # Currently unused
+defaults = []
+safe = []                                           # Currently unused
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
 
 [[bench]]
 name = "parsing"
