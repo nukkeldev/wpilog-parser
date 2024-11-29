@@ -1,7 +1,7 @@
 use std::{fs::File, time::Instant};
 
 use memmap2::Mmap;
-use wpilog_parser::read_only;
+use wpilog_parser::read_only::{self, Timestamp};
 
 fn main() {
     #[cfg(feature = "tracing")]
@@ -22,7 +22,5 @@ fn main() {
 
     println!("Parsed log ({:?})", start.elapsed());
 
-    let timestamp = &log["/Timestamp"];
-
-    // println!("{timestamp:?}");
+    let timestamp = log.get("/Timestamp").expect("`/Timestamp` does not exist.");
 }

@@ -71,3 +71,20 @@ struct WPILog<'a> {
     entries: HashMap<&'a str, Entry<'a>>, // Name correlated entries
 }
 ```
+
+## Usage
+
+### Method Categories
+
+- Exposition; Describing the data
+- Entries; Using the data
+- Diagnostics; Parsing descriptions, possibly via a wrapper
+
+```rust
+
+// A read-only lazily parsed WPILog
+let log = read_only::WPILog::<'data>::parse(...)?;
+
+let timestamp = log.get("/Timestamp").expect("`/Timestamp` does not exist.");
+
+```

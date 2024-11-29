@@ -1,15 +1,12 @@
-use std::{
-    collections::{hash_map::Keys, HashMap},
-    ops::Index,
-};
+use std::collections::{hash_map::Keys, HashMap};
 
 use crate::{
-    debug, error,
+    debug,
     errors::WPILogParseError,
     parsing::{
         u32, u32_len_prefix_utf8_string_unchecked, variable_length_u32, variable_length_u64,
     },
-    trace, tracing, warn, MINIMUM_WPILOG_SIZE, SUPPORTED_VERSION, WPILOG_MAGIC,
+    trace, tracing, MINIMUM_WPILOG_SIZE, SUPPORTED_VERSION, WPILOG_MAGIC,
 };
 
 // TYPES
@@ -23,7 +20,9 @@ pub struct WPILog<'a> {
     /// File header metadata
     pub(crate) metadata: &'a str,
     /// Name correlated entries
-    pub(crate) entries: HashMap<&'a str, Entry>,
+    pub(crate) entries: HashMap<&'a str, Entry<'a>>,
+    /// Backing data
+    data: &'a [u8],
 }
 
 impl<'a> WPILog<'a> {
@@ -70,7 +69,7 @@ impl<'a> WPILog<'a> {
         let mut entries: HashMap<&str, Entry> = HashMap::new();
 
         tracing! {
-            let mut now = std::time::Instant::now();
+            let mut first = std::time::Instant::now();
             let mut record_count = 0;
             let mut entry_count = 0;
         }
@@ -111,7 +110,7 @@ impl<'a> WPILog<'a> {
                 entries
                     .get_mut(&id_name[&entry_id])
                     .unwrap()
-                    .add_value(timestamp, bytes_read);
+                    .add_value(timestamp, &data[bytes_read..bytes_read + payload_size]);
                 bytes_read += payload_size;
 
                 continue;
@@ -132,16 +131,19 @@ impl<'a> WPILog<'a> {
                     unimplemented!("This parser does not support entry_id rebindings.");
                 }
 
-                let name = u32_len_prefix_utf8_string_unchecked(&data[bytes_read..], &mut 0);
-                id_name.insert(target_entry_id, name);
-                entries.insert(name, Entry::new(bytes_read));
-            }
+                let name =
+                    u32_len_prefix_utf8_string_unchecked(&data[bytes_read..], &mut bytes_read);
+                let ty = u32_len_prefix_utf8_string_unchecked(&data[bytes_read..], &mut bytes_read);
+                let metadata =
+                    u32_len_prefix_utf8_string_unchecked(&data[bytes_read..], &mut bytes_read);
 
-            bytes_read += payload_size - 5;
+                id_name.insert(target_entry_id, name);
+                entries.insert(name, Entry::new(name, ty, metadata));
+            }
         }
 
         tracing! {
-            let elapsed = now.elapsed();
+            let elapsed = first.elapsed();
 
             debug!(
                 ?elapsed,
@@ -151,15 +153,19 @@ impl<'a> WPILog<'a> {
                 throughput = (record_count as f32) / elapsed.as_secs_f32()
             );
 
-            now = std::time::Instant::now();
+            let second = std::time::Instant::now();
         }
 
         // Rarely will records be dirastically out of order, so sorting should be fairly cheap.
         entries.values_mut().for_each(|v| v.sort_by_timestamp());
 
-        debug!(second_pass = ?now.elapsed());
+        debug!(second_pass = ?second.elapsed());
 
-        let log = Self { metadata, entries };
+        let log = Self {
+            metadata,
+            entries,
+            data,
+        };
 
         trace!(entry_names = ?log.get_entry_names());
 
@@ -171,37 +177,41 @@ impl<'a> WPILog<'a> {
     pub fn get_entry_names(&self) -> Keys<'_, &str, Entry> {
         self.entries.keys()
     }
-}
 
-impl<'a> Index<&str> for WPILog<'a> {
-    type Output = Entry;
-
-    fn index(&self, index: &str) -> &Self::Output {
-        &self.entries[index]
+    pub fn get(&self, index: &str) -> Option<&Entry<'a>> {
+        self.entries.get(index)
     }
 }
 
 // ENTRY
 
 #[derive(Debug, Clone)]
-pub struct Entry {
-    decl_offset: usize,
-    values: Vec<(Timestamp, usize)>, // TODO: All data types should be parseable without the payload_size iirc
+pub struct Entry<'a> {
+    name: &'a str,
+    ty: &'a str,
+    metadata: &'a str,
+    values: Vec<(Timestamp, &'a [u8])>,
 }
 
-impl Entry {
-    fn new(decl_offset: usize) -> Self {
+impl<'a> Entry<'a> {
+    fn new(name: &'a str, ty: &'a str, metadata: &'a str) -> Self {
         Self {
-            decl_offset,
+            name,
+            ty,
+            metadata,
             values: vec![],
         }
     }
 
-    fn add_value(&mut self, timestamp: Timestamp, value_offset: usize) {
-        self.values.push((timestamp, value_offset));
+    fn add_value(&mut self, timestamp: Timestamp, raw_value: &'a [u8]) {
+        self.values.push((timestamp, raw_value));
     }
 
     fn sort_by_timestamp(&mut self) {
         self.values.sort_by_key(|(t, _)| *t);
+    }
+
+    pub fn get_value(&self, idx: usize) -> Option<&(Timestamp, &[u8])> {
+        self.values.get(idx)
     }
 }
