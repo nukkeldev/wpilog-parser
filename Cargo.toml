@@ -2,20 +2,15 @@
 name = "wpilog-parser"
 version = "0.1.0"
 edition = "2021"
+authors = ["nukkeldev"]
+description = "A parser for the WPILib DataLog format."
 
 [dependencies]
-memmap2 = "0.9.5"
-criterion = { version = "0.5.1", features = ["html_reports"] }
+nom = "7.1.3"
 thiserror = "2.0.3"
-tracing = { version = "0.1.41", optional = true }
-tracing-subscriber = { version = "0.3.18", features = [
-    "env-filter",
-], optional = true }
 
-[features]
-defaults = []
-safe = []                                           # Currently unused
-tracing = ["dep:tracing", "dep:tracing-subscriber"]
+criterion = { version = "0.5.1", features = ["html_reports"] }
+memmap2 = "0.9.5"
 
 [[bench]]
 name = "parsing"

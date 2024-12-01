@@ -1,3 +1,6 @@
+#pragma author nukkeldev
+#pragma description pattern for .wpilog files
+
 #pragma endianness little
 #pragma base_address 0x00
 
